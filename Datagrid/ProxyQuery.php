@@ -10,8 +10,9 @@
 
 namespace Sonata\DoctrineORMAdminBundle\Datagrid;
 
-use Doctrine\ORM\QueryBuilder;
+use Doctrine\DBAL\Types\Type;
 use Doctrine\ORM\Query;
+use Doctrine\ORM\QueryBuilder;
 use Sonata\AdminBundle\Datagrid\ProxyQueryInterface;
 
 /**
@@ -34,7 +35,7 @@ class ProxyQuery implements ProxyQueryInterface
      */
     public function __construct($queryBuilder)
     {
-        $this->queryBuilder      = $queryBuilder;
+        $this->queryBuilder = $queryBuilder;
         $this->uniqueParameterId = 0;
         $this->entityJoinAliases = array();
     }
@@ -74,7 +75,7 @@ class ProxyQuery implements ProxyQueryInterface
         $queryBuilderId = clone $queryBuilder;
 
         // step 1 : retrieve the targeted class
-        $from  = $queryBuilderId->getDQLPart('from');
+        $from = $queryBuilderId->getDQLPart('from');
         $class = $from[0]->getFrom();
         $metadata = $queryBuilderId->getEntityManager()->getMetadataFactory()->getMetadataFor($class);
 
@@ -115,11 +116,18 @@ class ProxyQuery implements ProxyQueryInterface
             $queryBuilderId->addSelect($sortBy);
         }
 
-        $results    = $queryBuilderId->getQuery()->execute(array(), Query::HYDRATE_ARRAY);
-        $idxMatrix  = array();
+        $results = $queryBuilderId->getQuery()->execute(array(), Query::HYDRATE_ARRAY);
+        $platform = $queryBuilderId->getEntityManager()->getConnection()->getDatabasePlatform();
+        $idxMatrix = array();
         foreach ($results as $id) {
             foreach ($idNames as $idName) {
-                $idxMatrix[$idName][] = $id[$idName];
+                $phpValue = $id[$idName];
+                // Convert ids to database value in case of custom type
+                $fieldType = $metadata->getTypeOfField($idName);
+                $type = Type::getType($fieldType);
+                $dbValue = $type->convertToDatabaseValue($phpValue, $platform);
+
+                $idxMatrix[$idName][] = $dbValue;
             }
         }
 
@@ -127,7 +135,10 @@ class ProxyQuery implements ProxyQueryInterface
         foreach ($idxMatrix as $idName => $idx) {
             if (count($idx) > 0) {
                 $idxParamName = sprintf('%s_idx', $idName);
-                $queryBuilder->andWhere(sprintf('%s IN (:%s)', $selects[$idName], $idxParamName));
+                $queryBuilder->andWhere($queryBuilder->expr()->in(
+                    $selects[$idName],
+                    sprintf(':%s', $idxParamName)
+                ));
                 $queryBuilder->setParameter($idxParamName, $idx);
                 $queryBuilder->setMaxResults(null);
                 $queryBuilder->setFirstResult(null);
